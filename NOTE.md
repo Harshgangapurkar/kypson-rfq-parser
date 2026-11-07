@@ -2,46 +2,39 @@
 
 ## 1. Approach
 
-I developed a lightweight, rule-based RFQ parser using Python. The parser uses regular expressions and text normalization to identify product categories, quantities, units, GSM, micron specifications, and delivery locations. It supports Indian numerical formats such as lakh, lac, hazaar, and k, along with common product synonyms and location aliases.
+I built a lightweight, rule-based RFQ parser using Python. The parser uses regular expressions and text normalization to extract six key fields: product category, quantity, unit, GSM, micron, and delivery location. It supports seven packaging categories, common product synonyms, Indian number formats, and location aliases. For location identification, I used GeoNamesCache. To improve performance, I implemented a cached combined regular-expression matcher. I chose a rule-based approach instead of using a large language model to keep the parser fast, transparent, and free from external API dependencies.
 
-I chose a deterministic, offline approach instead of an LLM to keep the parser fast, explainable, reproducible, and free from external API dependencies. The implementation also prioritizes distinguishing order quantities from individual bag capacity or weight.
+## 2. Score on `my_tests.jsonl`
 
-## 2. Evaluation
-
-- Test dataset: `my_tests.jsonl`
-- Total labelled examples: 50
+- Total examples: 50
 - Correct predictions: 50
 - Incorrect predictions: 0
 - Exact-match accuracy: **100%**
+- Execution time: **0.71 seconds**
 
-This score represents performance on my self-created development dataset and should not be interpreted as real-world accuracy.
+## 3. Three Messages the Parser Gets Wrong, and Why
 
-## 3. Known Limitations and Failure Examples
+1. **"We are looking to procure fifty thousand laminated polypropylene sacks for delivery to Nagpur."**
 
-The following examples illustrate input variations that the current parser does not fully support:
+   The parser may fail to extract the quantity because it is written in words rather than digits. The product description is also vague because it does not clearly match a supported category.
 
-1. **"We are looking to procure fifty thousand laminated polypropylene sacks for delivery to Nagpur."**  
-   The parser identifies Nagpur but cannot extract the quantity because it is written in words. It also returns no category because BOPP is not explicitly specified.
+2. **"Require pachaas hazaar BOPP bags in Pune."**
 
-2. **"Require pachaas hazaar BOPP bags in Pune."**  
-   Hindi number words are not supported by the current numerical extraction logic, so the quantity cannot be reliably extracted.
+   The parser does not recognize Hindi number expressions such as "pachaas hazaar", so it cannot reliably extract the quantity.
 
-3. **"Need 50000 polypropylene laminated sacks in Mumbai."**  
-   The parser may return no category because this description does not explicitly identify BOPP or another supported product category. More product context is needed to classify it reliably.
+3. **"Need 50000 polypropylene laminated sacks in Mumbai."**
 
-These examples highlight limitations in number-word recognition and product terminology. The parser intentionally avoids guessing ambiguous categories.
+   The parser might not identify the product category because the description omits terms like BOPP or other recognized category names. It avoids making guesses when the classification is uncertain.
 
-## 4. What I Would Do With 1,000 Real Labelled Examples
+## 4. What I Would Do Differently With 1,000 Real Labelled Examples
 
-I would first analyse the dataset to identify common buyer expressions, synonyms, regional terminology, and formatting variations. I would divide the examples into training, validation, and independent test sets. I would use the data to improve extraction rules and evaluate whether a lightweight NLP or machine-learning approach offers a measurable improvement over the rule-based baseline.
+With 1,000 labelled examples, I would first analyse the messages to identify patterns in product descriptions, regional terms, spelling variations, and quantity formats. I would divide the data into training, validation, and testing sets. Then, I would refine the extraction rules and evaluate whether lightweight NLP or machine-learning methods could improve the handling of ambiguous product categories and multilingual quantity inputs. I would also perform field-wise error analysis to identify areas that need the most improvement.
 
-I would also perform field-wise error analysis to identify which extraction fields need the most improvement.
+## 5. How I Would Know It Is Working With Real Buyers
 
-## 5. Measuring Performance With Real Buyers
-
-I would monitor field-wise accuracy, exact-match accuracy, missing-field rates, and incorrect predictions using real buyer messages and human-verified labels. I would collect user corrections, investigate recurring errors, and periodically evaluate the parser on a separate set of recent messages. This would help measure reliability and identify changes in buyer language over time.
+I would track field-wise accuracy, exact-match accuracy, missing-field rates, and incorrect predictions using real buyer messages verified by humans. I would collect corrections from buyers or reviewers, look for recurring issues, and regularly test the parser on new messages. This would help me understand whether the parser is reliable and adapting to the way real buyers communicate.
 
 ## 6. Tools Used
 
-Python, regular expressions, VS Code, and GeonamesCache were used for implementation and location recognition.  
-ChatGPT was used as an AI development assistant for understanding requirements, debugging, code review, and test-case design; the implementation and testing were reviewed and executed locally.
+Python, regular expressions, GeoNamesCache, and Cursor were used for building and improving the parser.  
+ChatGPT helped with understanding requirements, debugging, code review, and designing test cases.
