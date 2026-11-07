@@ -1,4 +1,4 @@
-
+"""Created my own evaluator to evaluate parse.py as score.py was unavaliable at that time"""
 import json
 from parse import parse_rfq
 
