@@ -1,6 +1,7 @@
 #All the imports
 import re
-
+import unicodedata
+from functools import lru_cache
 
 #Normalize the text
 def normalize_text(text: str) -> str:
@@ -388,29 +389,82 @@ def extract_micron(text: str):
     return int(value) if value.is_integer() else value
 
 
-
-def extract_location(text: str):
+@lru_cache(maxsize=1)
+def get_location_database():
     """
-    Extract the delivery or destination location from an RFQ.
+    Load global cities and countries once.
 
-    Uses an offline geographical database and contextual patterns.
-    Returns None if no location is identified.
+    Returns:
+        cities_by_name: Normalized city names mapped to records.
+        countries_by_name: Normalized country names mapped to records.
     """
 
-    # Normalize the buyer's message
-    text = normalize_text(text)
-    # Handle important Indian city names and their aliases
+    import geonamescache
 
-    # Handle important Indian city names and their aliases
+    gc = geonamescache.GeonamesCache()
+
+    # Load cities from every country
+    cities = gc.get_cities()
+
+    cities_by_name = {}
+
+    for city in cities.values():
+        name = city["name"]
+
+        # Normalize accents and case for matching
+        normalized_name = normalize_location_name(name)
+
+        if len(normalized_name) < 3:
+            continue
+
+        cities_by_name.setdefault(normalized_name, []).append(city)
+
+    # Load countries
+    countries = gc.get_countries()
+
+    countries_by_name = {}
+
+    for country in countries.values():
+        name = country["name"]
+        normalized_name = normalize_location_name(name)
+
+        countries_by_name[normalized_name] = name
+
+    return cities_by_name, countries_by_name
+
+
+def normalize_location_name(name: str) -> str:
+    """
+    Normalize a geographical name for reliable matching.
+    """
+
+    name = unicodedata.normalize("NFKD", name)
+
+    # Remove accent marks
+    name = "".join(
+        character for character in name
+        if not unicodedata.combining(character)
+    )
+
+    return name.lower().strip()
+
+
+
+
+@lru_cache(maxsize=1)
+def get_location_matcher():
+    """
+    Build the global location lookup and one combined regex only once.
+    This avoids scanning every GeoNames city separately for every RFQ.
+    """
+    cities_by_name, base_countries_by_name = get_location_database()
+
     location_aliases = {
-        # Maharashtra
         "aurangabad": "Chhatrapati Sambhaji Nagar",
         "sambhajinagar": "Chhatrapati Sambhaji Nagar",
         "chhatrapati sambhajinagar": "Chhatrapati Sambhaji Nagar",
         "chhatrapati sambhaji nagar": "Chhatrapati Sambhaji Nagar",
         "rajkot": "Rajkot",
-
-        # Major Indian cities
         "bombay": "Mumbai",
         "bangalore": "Bengaluru",
         "madras": "Chennai",
@@ -428,86 +482,166 @@ def extract_location(text: str):
         "panjim": "Panaji",
         "vizag": "Visakhapatnam",
         "new delhi": "New Delhi",
+        "new york": "New York",
+    }
+    normalized_aliases = {
+        normalize_location_name(alias): official
+        for alias, official in location_aliases.items()
     }
 
-    # Check the longest aliases first
-    for alias, official_name in sorted(
-        location_aliases.items(),
-        key=lambda item: len(item[0]),
-        reverse=True
-    ):
-        if re.search(r"\b" + re.escape(alias) + r"\b", text):
-            return official_name
-
-
-    # Load the offline geographical database
-    import geonamescache
-
-    gc = geonamescache.GeonamesCache()
-
-    # Collect Indian city names
-    cities = gc.get_cities()
-
-    indian_cities = {
-        city["name"].lower(): city["name"]
-        for city in cities.values()
-        if city.get("countrycode") == "IN"
+    country_aliases = {
+        "usa": "United States",
+        "us": "United States",
+        "uk": "United Kingdom",
+        "uae": "United Arab Emirates",
+        "u.s.a.": "United States",
+        "u.k.": "United Kingdom",
     }
+    countries_by_name = dict(base_countries_by_name)
+    for alias, official in country_aliases.items():
+        countries_by_name[normalize_location_name(alias)] = official
 
-    # Indian states and union territories
     indian_states = [
-        "andhra pradesh", "arunachal pradesh",
-        "assam", "bihar", "chhattisgarh",
-        "goa", "gujarat", "haryana",
-        "himachal pradesh", "jharkhand",
-        "karnataka", "kerala", "madhya pradesh",
-        "maharashtra", "manipur", "meghalaya",
-        "mizoram", "nagaland", "odisha",
-        "punjab", "rajasthan", "sikkim",
-        "tamil nadu", "telangana", "tripura",
-        "uttar pradesh", "uttarakhand",
-        "west bengal",
-        "andaman and nicobar islands",
-        "chandigarh", "delhi", "jammu and kashmir",
-        "ladakh", "lakshadweep",
-        "puducherry"
+        "andhra pradesh", "arunachal pradesh", "assam", "bihar",
+        "chhattisgarh", "goa", "gujarat", "haryana", "himachal pradesh",
+        "jharkhand", "karnataka", "kerala", "madhya pradesh", "maharashtra",
+        "manipur", "meghalaya", "mizoram", "nagaland", "odisha", "punjab",
+        "rajasthan", "sikkim", "tamil nadu", "telangana", "tripura",
+        "uttar pradesh", "uttarakhand", "west bengal",
+        "andaman and nicobar islands", "chandigarh", "delhi",
+        "jammu and kashmir", "ladakh", "lakshadweep", "puducherry"
     ]
+    normalized_states = {
+        normalize_location_name(state): state.title()
+        for state in indian_states
+    }
 
-    # Search for explicitly labelled destinations first
-    location_patterns = [
-        r"(?:deliver(?:y)?\s+to|ship(?:ping)?\s+to|"
-        r"send\s+to|destination\s*[:=]|location\s*[:=]|"
-        r"delivery\s+location\s*[:=]|at)\s+"
-        r"([a-z][a-z\s.-]*?)"
-        r"(?=\s*(?:,|;|$|for\b|with\b|and\b))"
+    all_locations = {}
+    for name in cities_by_name:
+        all_locations[name] = ("city", name)
+
+    city_aliases = {
+        "frankfurt": "frankfurt am main",
+        "new york": "new york",
+    }
+    for alias, official in city_aliases.items():
+        if official in cities_by_name:
+            all_locations[alias] = ("city", official)
+
+    for name, official in countries_by_name.items():
+        all_locations[name] = ("country", official)
+    for name, official in normalized_aliases.items():
+        all_locations[name] = ("alias", official)
+    for name, official in normalized_states.items():
+        all_locations[name] = ("state", official)
+
+    # Longest-first preserves multi-word names and prevents shorter
+    # alternatives from consuming part of a longer location.
+    alternatives = sorted(all_locations, key=len, reverse=True)
+    matcher = re.compile(
+        r"(?<!\w)(?:" + "|".join(re.escape(name) for name in alternatives) + r")(?!\w)"
+    )
+
+    import geonamescache
+    gc = geonamescache.GeonamesCache()
+    country_codes_by_name = {
+        country["name"].lower(): country["iso"].lower()
+        for country in gc.get_countries().values()
+    }
+
+    return cities_by_name, all_locations, matcher, country_codes_by_name
+
+
+def extract_location(text: str):
+    """Extract the most relevant destination from an RFQ."""
+    text = normalize_text(text)
+    normalized_text = normalize_location_name(text)
+
+    cities_by_name, all_locations, matcher, country_codes_by_name = get_location_matcher()
+
+    destination_patterns = [
+        (3, r"\b(?:deliver(?:y)?\s+to|ship(?:ping)?\s+to|send\s+to|destination\s*[:=]|delivery\s+location\s*[:=])\s*"),
+        (2, r"\b(?:required\s+in|requirement\s+in|located\s+in)\s+"),
+        (1, r"\b(?:in|at)\s+"),
     ]
+    non_location_words = {
+        "best", "reading", "bath", "nice", "orange", "mobile", "hope",
+        "union", "victoria",
+    }
 
-    for pattern in location_patterns:
-        match = re.search(pattern, text)
+    mentions = []
+    for match in matcher.finditer(normalized_text):
+        name = match.group(0)
+        location_type, official_name = all_locations[name]
 
-        if match:
-            candidate = match.group(1).strip()
+        prefix = normalized_text[:match.start()]
+        priority = 0
+        for pattern_priority, context_pattern in destination_patterns:
+            if re.search(context_pattern + r"[^,;]{0,40}$", prefix):
+                priority = pattern_priority
+                break
 
-            # Match the extracted phrase against known locations
-            if candidate in indian_cities:
-                return indian_cities[candidate]
+        if name in non_location_words and priority == 0:
+            continue
 
-            if candidate in indian_states:
-                return candidate.title()
+        mentions.append({
+            "start": match.start(),
+            "end": match.end(),
+            "type": location_type,
+            "name": name,
+            "official_name": official_name,
+            "priority": priority,
+        })
 
-    # Search for Indian states in the message
-    for state in sorted(indian_states, key=len, reverse=True):
-        if re.search(r"\b" + re.escape(state) + r"\b", text):
-            return state.title()
+    if not mentions:
+        return None
 
-    # Search for Indian cities in the message
-    for city in sorted(indian_cities, key=len, reverse=True):
-        if re.search(r"\b" + re.escape(city) + r"\b", text):
-            return indian_cities[city]
+    mentions.sort(
+        key=lambda item: (
+            -item["priority"],
+            1 if item["type"] == "country" else 0,
+            -(item["end"] - item["start"]),
+            item["start"]
+        )
+    )
+    selected = mentions[0]
 
-    # No location was recognized
-    return None
+    if selected["type"] in ("alias", "state", "country"):
+        return selected["official_name"]
 
+    country_mentions = [
+        item for item in mentions if item["type"] == "country"
+    ]
+    matching_cities = cities_by_name[selected["official_name"]]
+
+    if country_mentions:
+        country_names = {
+            item["official_name"].lower() for item in country_mentions
+        }
+        country_codes = {
+            country_codes_by_name[name]
+            for name in country_names
+            if name in country_codes_by_name
+        }
+        matching_cities_by_country = [
+            city for city in matching_cities
+            if city.get("countrycode", "").lower() in country_codes
+        ]
+        if matching_cities_by_country:
+            matching_cities = matching_cities_by_country
+
+    selected_city = max(
+        matching_cities,
+        key=lambda city: city.get("population", 0)
+    )
+    # Return ASCII-equivalent spelling while preserving the city's
+    # capitalization (for example, "São Paulo" becomes "Sao Paulo").
+    city_name = unicodedata.normalize("NFKD", selected_city["name"])
+    city_name = "".join(
+        character for character in city_name
+        if not unicodedata.combining(character)
+    )
+    return city_name
 
 
 def parse_rfq(text: str) -> dict:
@@ -674,18 +808,6 @@ if __name__ == "__main__":
         print("Location:", location)
 
         print("-" * 70)
-
-print("\nFINAL PARSER TEST")
-print("=" * 70)
-
-rfq = "bopp bags chahiye 40 hazaar, 65 gsm, Nagpur"
-rfq = "We are looking to procure fifty thousand laminated polypropylene sacks for delivery to Nagpur."
-
-result = parse_rfq(rfq)
-
-print("Input:", rfq)
-print("Output:", result)
-print("-" * 70)
 
 
 
